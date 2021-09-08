@@ -2,13 +2,23 @@
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include  <linux/slab.h>
+#include <linux/slab.h>
+#include <linux/miscdevice.h>
+#include <linux/uaccess.h> 
+
+#include "misc_data.h"
 
 #define NAME_MAX_LENGTH 32
 
+struct my_misc_dev{
+    struct miscdevice misc;
+    struct miscdata data;
+};
+
+struct my_misc_dev *misc_dev_p;
+
 void print_jiff(struct seq_file *m)
 {
-
     struct timeval tv1;
     struct timespec tv2;
     unsigned long j1;
@@ -72,6 +82,7 @@ void list_ops(struct seq_file *m)
     list_for_each_safe(p, n, &head)
     {
         node = list_entry(p, my_list, list);
+        seq_printf(m, "deleting %s\n", node->name);
         list_del(p);
         kfree(node);
 
@@ -117,13 +128,54 @@ void demo(struct seq_file *m)
 static int hello_proc_show(struct seq_file *m, void *v) 
 {
     //print_jiff(m);
-    demo(m);
+    //demo(m);
     list_ops(m);
     return 0;
 }
 
-static int hello_proc_open(struct inode *inode, struct  file *file) {
+static int hello_proc_open(struct inode *inode, struct  file *file) 
+{
     return single_open(file, hello_proc_show, NULL);
+}
+
+
+int misc_open(struct inode *inode, struct file *filep)
+{
+    filep->private_data = misc_dev_p;
+    return 0;
+}
+
+long misc_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
+{
+    int ret = 0;
+    struct my_misc_dev *devp = (struct my_misc_dev *)(filep->private_data);
+
+    if (_IOC_TYPE(cmd) != XY_MISC_IOC_MAGIC)
+        return -EINVAL;
+
+    if (_IOC_NR(cmd) > XY_MISC_IOC_MAXNR)
+        return -EINVAL;
+
+    switch(cmd)
+    {
+        case XY_MISC_IOC_PRINT:
+            printk("XY_MISC_IOC_PRINT\n");
+            printk("val:%d, size: %d, str: %s\n", devp->data.val, devp->data.size, devp->data.str);
+            break;
+        case XY_MISC_IOC_SET:
+            printk("XY_MISC_IOC_SET\n");
+            ret = copy_from_user((unsigned char*)&(devp->data), (unsigned char *)arg, sizeof(struct miscdata));
+            printk("set val:%d, size: %d, str: %s\n", devp->data.val, devp->data.size, devp->data.str);
+            break;
+        case XY_MISC_IOC_GET:
+            printk("XY_MISC_IOC_GET\n");
+            ret = copy_to_user((unsigned char*)arg,(unsigned char*)&(devp->data), sizeof(struct miscdata));
+            break;
+        default:
+            return -EINVAL;
+    }
+
+    return ret;
 }
 
 static const struct file_operations hello_proc_fops = {
@@ -134,19 +186,42 @@ static const struct file_operations hello_proc_fops = {
     .release = single_release,
 };
 
+static const struct file_operations misc_fops ={
+    .owner = THIS_MODULE,
+    .open = misc_open,
+    .unlocked_ioctl = misc_ioctl,
+};
+
+static struct miscdevice xy_misc = {
+    .minor = MISC_DYNAMIC_MINOR,
+    .name = "xy_misc",
+    .fops = &misc_fops,
+};
+
 static int __init hello_init(void)
 {    
     printk(KERN_ALERT "Hello world, raxiao\n");    
+
     proc_create("raxiao_proc", 0, NULL, &hello_proc_fops);
-    return 0;
+
+    misc_dev_p = kmalloc(sizeof(struct my_misc_dev), GFP_KERNEL);
+    if (!misc_dev_p)
+        return -ENOMEM;
+
+    memset(&(misc_dev_p->data), 0, sizeof(misc_dev_p->data));
+    misc_dev_p->misc = xy_misc;
+
+    return misc_register(&(misc_dev_p->misc));
 }
 
 static void __exit hello_exit(void)
 {    
-    remove_proc_entry("raxiao_proc", NULL);
     printk(KERN_ALERT "Goodbye cruel world, raxiao\n");
+    remove_proc_entry("raxiao_proc", NULL);
+    misc_deregister(&(misc_dev_p->misc));
+    kfree(misc_dev_p);
 }
-    
+
 MODULE_LICENSE("GPL");
 module_init(hello_init);
 module_exit(hello_exit);
